@@ -1,24 +1,31 @@
+# app.py
+import os
+import json
 import time
+from datetime import datetime
+
 import requests
 import streamlit as st
-from datetime import datetime
-import json
 
 # ===================== PAGE CONFIG =====================
 st.set_page_config(page_title="SignCall", layout="wide")
 
-# ===================== CONFIG ==========================
-BACKEND = "http://127.0.0.1:8000"
-DEFAULT_USER = "demo_user"  # replace with Supabase Auth uid after login
+# ===================== BACKEND URL =====================
+BACKEND = os.getenv("BACKEND_URL")
+if not BACKEND:
+    try:
+        BACKEND = st.secrets["BACKEND_URL"]
+    except Exception:
+        BACKEND = "http://127.0.0.1:8003"
+
+DEFAULT_USER = "demo_user"
 EMOJI_MAP = {"Yes": "👍", "No": "👎", "Hello": "✌"}
 
 # ===================== STATE ===========================
-if "user_id" not in st.session_state:
-    st.session_state["user_id"] = DEFAULT_USER
-if "last_seen_ts" not in st.session_state:
-    st.session_state["last_seen_ts"] = ""
-if "room_code" not in st.session_state:
-    st.session_state["room_code"] = "sign-demo"  # any default
+st.session_state.setdefault("user_id", DEFAULT_USER)
+st.session_state.setdefault("last_seen_ts", "")
+st.session_state.setdefault("room_code", "sign-demo")
+st.session_state.setdefault("teach_on", False)
 
 # ===================== SIDEBAR =========================
 with st.sidebar:
@@ -85,22 +92,22 @@ with st.sidebar:
 
     st.markdown("---")
     current_uid = st.session_state.get("user_id", "demo_user")
-    st.caption(f"Current user: `{current_uid}`")
+    st.caption(f"Current user: {current_uid}")
     if current_uid != "demo_user":
         if st.button("Logout"):
             st.session_state["user_id"] = "demo_user"
             st.success("Logged out.")
 
     st.markdown("---")
-    st.markdown("## ⚙️ Settings")
+    st.markdown("## ⚙ Settings")
     user_id = st.text_input("User ID", value=st.session_state.get("user_id", "demo_user"))
     st.session_state["user_id"] = user_id
 
     st.markdown("## 🔊 Audio")
     play_ui_sounds = st.toggle("UI sounds (send/receive)", value=True)
     tts_enabled = st.toggle("Read incoming text (TTS)", value=False)
-    tts_rate = st.slider("Voice speed", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
-    tts_pitch = st.slider("Voice pitch", min_value=0.0, max_value=2.0, value=1.0, step=0.1)
+    tts_rate = st.slider("Voice speed", 0.5, 2.0, 1.0, 0.1)
+    tts_pitch = st.slider("Voice pitch", 0.0, 2.0, 1.0, 0.1)
 
     autorefresh = st.toggle("Auto-refresh chat (2s)", value=True)
     translate_toggle = st.toggle("Show translations (TA + HI)", value=True)
@@ -108,44 +115,45 @@ with st.sidebar:
 # ===================== STYLES ==========================
 st.markdown(
     """
-    <style>
-      .msg-card{background:#111418;border:1px solid #23272f;padding:12px 14px;border-radius:14px;margin:6px 0}
-      .msg-meta{font-size:12px;color:#8b97a7;margin-top:6px}
-      .msg-emoji{font-size:18px;margin-left:6px}
-      .msg-translate{font-size:13px;color:#cbd5e1;margin-top:6px;opacity:.95}
-      .msg-you{border-left:4px solid #22c55e;padding-left:10px}
-      .msg-peer{border-left:4px solid #3b82f6;padding-left:10px}
-      .pill{display:inline-block;background:#1f2937;color:#e5e7eb;font-size:12px;padding:2px 8px;border-radius:999px;margin-left:8px}
-      .primary{background:#2563eb}
-      .danger{background:#ef4444}
-      .row{display:flex;gap:12px;margin:8px 0;flex-wrap:wrap}
-      button{padding:8px 12px;border-radius:10px;border:1px solid #334155;background:#111827;color:#e5e7eb;cursor:pointer}
-      video, canvas{width:320px;height:240px;background:#111418;border:1px solid #23272f;border-radius:12px}
-    </style>
-    """,
+<style>
+  .msg-card{background:#111418;border:1px solid #23272f;padding:12px 14px;border-radius:14px;margin:6px 0}
+  .msg-meta{font-size:12px;color:#8b97a7;margin-top:6px}
+  .msg-emoji{font-size:18px;margin-left:6px}
+  .msg-translate{font-size:13px;color:#cbd5e1;margin-top:6px;opacity:.95}
+  .msg-you{border-left:4px solid #22c55e;padding-left:10px}
+  .pill{display:inline-block;background:#1f2937;color:#e5e7eb;font-size:12px;padding:2px 8px;border-radius:999px;margin-left:8px}
+  .row{display:flex;gap:12px;margin:8px 0;flex-wrap:wrap}
+  button{padding:8px 12px;border-radius:10px;border:1px solid #334155;background:#111827;color:#e5e7eb;cursor:pointer}
+  video, canvas{width:320px;height:240px;background:#111418;border:1px solid #23272f;border-radius:12px}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .chip{background:#0f172a;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px}
+  /* make text inputs a bit larger for better UX (especially Teach name) */
+  .stTextInput input{height:48px;font-size:18px}
+</style>
+""",
     unsafe_allow_html=True,
 )
 
 # ===================== LAYOUT =========================
-st.title("✌️ SignCall — Sign-to-Text Video Calls")
-col1, col2 = st.columns([1.2, 1])
+st.title("✌ SignCall — Sign-to-Text Video Calls")
+col1, col2 = st.columns([1.25, 1])
 
-# ===================== COL1: MULTI-USER CALL =========
+# ===================== COL1: VIDEO CALL ===============
 with col1:
     st.subheader("Video Call (Multi-user)")
     st.session_state["room_code"] = st.text_input(
         "Room code (share with others to join):",
-        value=st.session_state["room_code"]
+        value=st.session_state["room_code"],
     )
 
-    # Main embedded UI (PeerJS + WS + WebSpeech + MediaPipe)
-   
+    _backend_js = json.dumps(BACKEND)
+    _user_id_js = json.dumps(st.session_state["user_id"])
+    _roomcode_js = json.dumps(st.session_state["room_code"])
+    _tts_rate = float(tts_rate)
+    _tts_pitch = float(tts_pitch)
 
-_backend_js  = json.dumps(BACKEND)
-_user_id_js  = json.dumps(st.session_state["user_id"])
-_roomcode_js = json.dumps(st.session_state["room_code"])
-
-st.components.v1.html(f"""
+    st.components.v1.html(
+        f"""
 <!DOCTYPE html>
 <html>
 <head>
@@ -160,6 +168,8 @@ st.components.v1.html(f"""
   .caption{{ font-size:16px; margin-top:6px }}
   .small{{ font-size:12px; color:#94a3b8 }}
   #remotes{{ display:flex; flex-wrap:wrap; gap:12px }}
+  .chips{{ display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 }}
+  .chip{{ background:#0f172a;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px }}
 </style>
 </head>
 <body>
@@ -177,11 +187,14 @@ st.components.v1.html(f"""
     <button class="btn" id="stopCam">🛑 Stop Camera</button>
     <button class="btn" id="startMic">🎤 Start STT</button>
     <button class="btn" id="stopMic">🔇 Stop STT</button>
-    <button class="btn" id="startGest">🖐️ Start Gestures</button>
+    <button class="btn" id="startGest">🖐 Start Gestures</button>
     <button class="btn" id="stopGest">✋ Stop Gestures</button>
+    <button class="btn" id="refreshLib">🔄 Refresh gestures</button>
   </div>
 
   <div id="status" class="small">Status: idle</div>
+  <div class="small" style="margin-top:6px">Custom gestures:</div>
+  <div id="customList" class="chips"></div>
 
   <!-- PeerJS -->
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
@@ -191,45 +204,54 @@ st.components.v1.html(f"""
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
-  <!-- TFJS (optional future models) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
-
   <script>
-  // ---- values injected from Streamlit ----
   const BACKEND  = {_backend_js};
   const USER_ID  = {_user_id_js};
   const ROOMCODE = {_roomcode_js};
+  const TTS_RATE = {_tts_rate};
+  const TTS_PITCH= {_tts_pitch};
 
-  // derive websocket URL from BACKEND
+  // Derive websocket URL from BACKEND (no template braces to confuse Python)
   const _bURL = new URL(BACKEND);
   const _wsScheme = (_bURL.protocol === 'https:') ? 'wss:' : 'ws:';
   const _wsHost   = _bURL.host;
-  function wsRoomURL(code) {{ return `${{_wsScheme}}//${{_wsHost}}/ws/room/${{encodeURIComponent(code)}}`; }}
+  function wsRoomURL(code) {{
+    return _wsScheme + '//' + _wsHost + '/ws/room/' + encodeURIComponent(code);
+  }}
 
   const statusEl   = document.getElementById('status');
   const localVideo = document.getElementById('localVideo');
   const localCap   = document.getElementById('localCap');
   const remotesDiv = document.getElementById('remotes');
+  const customList = document.getElementById('customList');
 
   let localStream = null;
   let peer = null;
   let myPeerId = null;
   let ws = null;
 
-  // pid -> {{ "call": RTCPeerConnection, "data": DataConnection, "videoEl": HTMLVideoElement, "capEl": HTMLElement, "transEl": HTMLElement }}
+  // pid -> {{ call, data, videoEl, capEl, transEl }}
   const peers = {{}};
+
+  // ===== Custom gesture library =====
+  // Each entry: {{ name: string, vecs: [Float32Array] }}
+  let GESTURE_LIB = [];
+  // runtime window buffer (36 frames of 63-dim vectors)
+  let WIN = [];
+  let customOn = false;
+  let cooldownUntil = 0;
 
   function setStatus(t) {{ statusEl.textContent = "Status: " + t; }}
 
   async function apiSave(content, emoji="") {{
     try {{
-      await fetch(`${{BACKEND}}/message?user_id=${{encodeURIComponent(USER_ID)}}&content=${{encodeURIComponent(content)}}&emoji=${{encodeURIComponent(emoji)}}&language=en`, {{ method: 'POST' }});
+      await fetch(${{BACKEND}}/message?user_id=${{encodeURIComponent(USER_ID)}}&content=${{encodeURIComponent(content)}}&emoji=${{encodeURIComponent(emoji)}}&language=en, {{ method: 'POST' }});
     }} catch (e) {{ console.error(e); }}
   }}
 
   async function translate(text, lang) {{
     try {{
-      const r = await fetch(`${{BACKEND}}/translate?text=${{encodeURIComponent(text)}}&lang=${{lang}}`);
+      const r = await fetch(${{BACKEND}}/translate?text=${{encodeURIComponent(text)}}&lang=${{lang}});
       if (!r.ok) return "";
       const j = await r.json();
       return j.translated || "";
@@ -241,8 +263,8 @@ st.components.v1.html(f"""
       const pick = localStorage.getItem("signcall_voice");
       const u = new SpeechSynthesisUtterance(text);
       u.lang = "en-US";
-      u.rate = {float(tts_rate)};
-      u.pitch = {float(tts_pitch)};
+      u.rate = TTS_RATE;
+      u.pitch= TTS_PITCH;
       const vs = window.speechSynthesis.getVoices();
       const found = vs.find(v => v.name === pick);
       if (found) u.voice = found;
@@ -263,7 +285,7 @@ st.components.v1.html(f"""
     const videoEl = card.querySelector('video');
     const capEl   = card.querySelector('[data-cap]');
     const transEl = card.querySelector('[data-trans]');
-    peers[pid] = Object.assign(peers[pid] || {{}}, {{ "videoEl": videoEl, "capEl": capEl, "transEl": transEl }});
+    peers[pid] = Object.assign(peers[pid] || {{}}, {{ videoEl, capEl, transEl }});
     return peers[pid];
   }}
 
@@ -271,7 +293,7 @@ st.components.v1.html(f"""
     localCap.innerText = text + (emoji ? " " + emoji : "");
     apiSave(text, emoji);
     Object.values(peers).forEach(p => {{
-      if (p.data && p.data.open) p.data.send({{ "type":"caption", "text": text, "emoji": emoji }});
+      if (p.data && p.data.open) p.data.send({{ type:"caption", text, emoji }});
     }});
   }}
 
@@ -283,7 +305,7 @@ st.components.v1.html(f"""
     (async () => {{
       const ta = await translate(msg.text || "", "ta");
       const hi = await translate(msg.text || "", "hi");
-      p.transEl.innerHTML = `TA: ${{ta}}<br/>HI: ${{hi}}`;
+      p.transEl.innerHTML = TA: ${{ta}}<br/>HI: ${{hi}};
     }})();
     speak(msg.text || "");
   }}
@@ -307,13 +329,13 @@ st.components.v1.html(f"""
             slot.videoEl.srcObject = remote;
           }});
           const pid = incomingCall.peer;
-          peers[pid] = Object.assign(peers[pid] || {{}}, {{ "call": incomingCall }});
+          peers[pid] = Object.assign(peers[pid] || {{}}, {{ call: incomingCall }});
         }});
 
         // incoming data
         peer.on('connection', (conn) => {{
           const pid = conn.peer;
-          peers[pid] = Object.assign(peers[pid] || {{}}, {{ "data": conn }});
+          peers[pid] = Object.assign(peers[pid] || {{}}, {{ data: conn }});
           conn.on('data', (msg) => handleIncomingData(pid, msg));
         }});
 
@@ -322,11 +344,11 @@ st.components.v1.html(f"""
     }});
   }}
 
-  // ---- WS signalling (room membership -> peer ids) ----
+  // ---- WS signalling ----
   function joinRoomWS() {{
     ws = new WebSocket(wsRoomURL(ROOMCODE));
     ws.onopen = () => {{
-      ws.send(JSON.stringify({{ "type":"hello", "peerId": myPeerId, "userId": USER_ID }}));
+      ws.send(JSON.stringify({{ type:"hello", peerId: myPeerId, userId: USER_ID }}));
     }};
     ws.onmessage = (ev) => {{
       const m = JSON.parse(ev.data || '{{}}');
@@ -342,8 +364,7 @@ st.components.v1.html(f"""
           }});
           const dconn = peer.connect(pid);
           dconn.on('data', (msg) => handleIncomingData(pid, msg));
-
-          peers[pid] = Object.assign(peers[pid] || {{}}, {{ "call": outCall, "data": dconn }});
+          peers[pid] = Object.assign(peers[pid] || {{}}, {{ call: outCall, data: dconn }});
         }});
       }}
     }};
@@ -395,15 +416,135 @@ st.components.v1.html(f"""
     setStatus("STT OFF");
   }};
 
-  // ---- MediaPipe Hands (👍 / 👎 / ✌) ----
+  // ---- Custom gesture library loading & UI ----
+  function renderGestureChips() {{
+    customList.innerHTML = "";
+    if (!GESTURE_LIB.length) {{
+      const div = document.createElement('div');
+      div.className = 'chip';
+      div.textContent = "None yet";
+      customList.appendChild(div);
+      return;
+    }}
+    const names = [...new Set(GESTURE_LIB.map(g => g.name))];
+    names.forEach(n => {{
+      const c = document.createElement('div');
+      c.className = 'chip';
+      c.textContent = n;
+      customList.appendChild(c);
+    }});
+  }}
+
+  function meanVec(frames) {{
+    // frames: array of 63-length arrays
+    const d = 63;
+    const out = new Float32Array(d);
+    for (let i=0;i<frames.length;i++) {{
+      const f = frames[i];
+      for (let j=0;j<d;j++) out[j] += f[j];
+    }}
+    const inv = 1 / Math.max(frames.length, 1);
+    for (let j=0;j<d;j++) out[j] *= inv;
+    return out;
+  }}
+
+  function cosine(a, b) {{
+    let dot=0, na=0, nb=0;
+    for (let i=0;i<a.length;i++) {{
+      dot += a[i]*b[i];
+      na += a[i]*a[i];
+      nb += b[i]*b[i];
+    }}
+    return dot / (Math.sqrt(na)*Math.sqrt(nb) + 1e-9);
+  }}
+
+  async function loadGestureLibrary() {{
+    try {{
+      const url = ${{BACKEND}}/custom_gesture/samples?user_id=${{encodeURIComponent(USER_ID)}};
+      const r = await fetch(url);
+      if (!r.ok) throw new Error("fetch failed");
+      const rows = await r.json(); // each: {{name, seq_json}}
+      const lib = [];
+      for (const row of rows) {{
+        const name = row.name || "custom";
+        const seq = (row.seq_json && row.seq_json.frames) || [];
+        const frames = seq.map(fr => Float32Array.from(fr)); // 36x63 flattened
+        const v = meanVec(frames);
+        lib.push({{ name, vecs: [v] }});
+      }}
+      // merge by name
+      const byName = {{}};
+      for (const g of lib) {{
+        if (!byName[g.name]) byName[g.name] = {{ name:g.name, vecs:[] }};
+        byName[g.name].vecs.push(...g.vecs);
+      }}
+      GESTURE_LIB = Object.values(byName);
+      renderGestureChips();
+      customOn = GESTURE_LIB.length > 0;
+      setStatus(customOn ? "Gestures ON (custom loaded)" : "Gestures ON");
+    }} catch(e) {{
+      console.warn("loadGestureLibrary failed", e);
+      GESTURE_LIB = [];
+      renderGestureChips();
+    }}
+  }}
+
+  document.getElementById('refreshLib').onclick = () => loadGestureLibrary();
+
+  // ---- MediaPipe Hands (quick + custom) ----
   let camera = null;
   const videoGhost = document.createElement('video');
-  const hands = new Hands({{ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${{f}}` }});
+  const hands = new Hands({{ locateFile: (f) => https://cdn.jsdelivr.net/npm/@mediapipe/hands/${{f}} }});
   hands.setOptions({{
     maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7
   }});
+
+  function normalize(points) {{
+    // points: 21 landmarks [{{x,y,z}}...]
+    const base = points[0];
+    const shifted = points.map(p => [p.x - base.x, p.y - base.y, p.z - base.z]);
+    let m=0;
+    for (let i=1;i<shifted.length;i++) {{
+      const d = Math.hypot(shifted[i][0], shifted[i][1], shifted[i][2]);
+      m += d;
+    }}
+    m = Math.max(m / Math.max(shifted.length-1,1), 1e-6);
+    return shifted.map(p => [p[0]/m, p[1]/m, p[2]/m]); // 21x3
+  }}
+
+  function flatten63(n21x3) {{
+    const out = new Float32Array(63);
+    let k=0; for (let i=0;i<21;i++) {{ out[k++]=n21x3[i][0]; out[k++]=n21x3[i][1]; out[k++]=n21x3[i][2]; }}
+    return out;
+  }}
+
+  function tryCustomRecognition() {{
+    if (!customOn) return;
+    if (Date.now() < cooldownUntil) return;
+    if (WIN.length < 36) return;
+    // make current mean vector
+    const cur = meanVec(WIN);
+    // find nearest gesture by max cosine over all samples
+    let bestName = "";
+    let bestScore = -1;
+    for (const g of GESTURE_LIB) {{
+      for (const v of g.vecs) {{
+        const s = cosine(cur, v);
+        if (s > bestScore) {{ bestScore = s; bestName = g.name; }}
+      }}
+    }}
+    // threshold to avoid noise
+    if (bestScore >= 0.92) {{
+      broadcastCaption(bestName, "🖐");
+      cooldownUntil = Date.now() + 1500; // 1.5s cooldown
+      WIN = []; // reset window so it doesn’t spam
+    }}
+  }}
+
   hands.onResults((results) => {{
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length===0) return;
+
+    // ===== Hard-coded quick signs =====
     const lm = results.multiHandLandmarks[0];
     const isExt = (tip,pip)=> lm[tip].y < lm[pip].y;
     const isFold= (tip,pip)=> lm[tip].y > lm[pip].y;
@@ -417,13 +558,22 @@ st.components.v1.html(f"""
     const dx = Math.abs(lm[8].x - lm[12].x);
     const vSign = idxExt && midExt && ringF && pinkF && dx > 0.05;
 
-    if (thumbUp)      broadcastCaption("Yes", "👍");
-    else if (thumbDown) broadcastCaption("No", "👎");
-    else if (vSign)     broadcastCaption("Hello", "✌");
+    if (thumbUp)      {{ broadcastCaption("Yes", "👍"); return; }}
+    if (thumbDown)    {{ broadcastCaption("No", "👎"); return; }}
+    if (vSign)        {{ broadcastCaption("Hello", "✌"); return; }}
+
+    // ===== Custom window-building =====
+    const n = normalize(lm);
+    const f63 = flatten63(n);
+    WIN.push(Array.from(f63));
+    if (WIN.length > 36) WIN.shift();
+
+    tryCustomRecognition();
   }});
 
   document.getElementById('startGest').onclick = async () => {{
     if (!localStream) {{ setStatus("Start camera first."); return; }}
+    await loadGestureLibrary(); // load samples when starting gestures
     videoGhost.srcObject = localStream;
     videoGhost.play();
     camera = new window.Camera(videoGhost, {{
@@ -435,86 +585,180 @@ st.components.v1.html(f"""
   }};
   document.getElementById('stopGest').onclick = () => {{
     if (camera) camera.stop();
+    customOn = false;
+    WIN = [];
     setStatus("Gestures OFF");
   }};
   </script>
 </body>
 </html>
-""", height=820, scrolling=True)
+""",
+        height=900,
+        scrolling=True,
+    )
 
+# ===================== Teach a custom sign =====================
+with st.expander("🧪 Teach a custom sign (Personal Dictionary)", expanded=False):
+    # Bigger input by CSS above; keep text_input (single-line)
+    teach_name = st.text_input("Sign name (e.g., Amma, Bus stop, OK?)", key="teach_name")
+    teach_reps = st.number_input("Samples to record", 5, 20, 5, key="teach_reps")
+    st.caption(
+        "Click *Start teach* then perform the sign; it will capture ~1.2s windows repeatedly until the target sample count is reached."
+    )
 
-    # ===== Personal Dictionary: Teach a custom sign =====
-with st.expander("🧪 Teach a custom sign (Personal Dictionary)"):
-        teach_name = st.text_input("Sign name (e.g., Amma, Bus stop, OK?)", key="teach_name")
-        teach_reps = st.number_input("Samples to record", 5, 20, 8)
-        st.caption("Click [Start teach] then perform the sign; it will capture ~1.2s windows repeatedly.")
-        teach_start = st.button("Start teach")
-        teach_stop = st.button("Stop teach")
+    colA, colB = st.columns([1, 1])
+    start_clicked = colA.button("Start teach", use_container_width=True)
+    stop_clicked = colB.button("Stop teach", use_container_width=True)
 
-        if teach_start and teach_name:
-            st.session_state["teach_on"] = True
-        if teach_stop:
-            st.session_state["teach_on"] = False
+    if start_clicked and teach_name.strip():
+        st.session_state["teach_on"] = True
+    if stop_clicked:
+        st.session_state["teach_on"] = False
 
-        if st.session_state.get("teach_on"):
-            st.components.v1.html(f"""
-            <div style="padding:8px;background:#111418;border:1px solid #23272f;border-radius:10px;margin-top:8px">
-              <div id="teachStat" style="color:#cbd5e1;font-size:14px">Recording samples… 0/{teach_reps}</div>
-            </div>
-            <script>
-              (function(){{
-                const USER_ID = {st.session_state["user_id"]!r};
-                const NAME = {teach_name!r};
-                const TARGET = {int(teach_reps)};
-                let count = 0;
-                let frames = [];
-                let teaching = true;
+    if st.session_state.get("teach_on"):
+        uid_js = json.dumps(st.session_state["user_id"])
+        name_js = json.dumps(teach_name.strip())
+        reps_js = int(teach_reps)
+        backend_js = json.dumps(BACKEND)
 
-                async function getStream(){{ try {{ return await navigator.mediaDevices.getUserMedia({{video:true}}); }} catch(e){{ return null; }} }}
-                function normalize(pts){{
-                  const base = pts[0];
-                  const shifted = pts.map(p => [p[0]-base[0], p[1]-base[1], p[2]-base[2]]);
-                  let m=0; for (let i=1;i<shifted.length;i++) {{ const d = Math.hypot(shifted[i][0], shifted[i][1], shifted[i][2]); m += d; }}
-                  m = Math.max(m/(shifted.length-1), 1e-6);
-                  return shifted.map(p => [p[0]/m, p[1]/m, p[2]/m]);
-                }}
+        st.components.v1.html(
+            f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <style>
+    body {{ background:#0b0f14; color:#e5e7eb; font-family:system-ui; margin:0; padding:8px }}
+    .wrap {{ border:1px solid #23272f; border-radius:10px; padding:10px; background:#111418 }}
+    .row {{ display:flex; gap:12px; align-items:flex-start }}
+    video {{ width:320px; height:240px; background:#0b0f14; border:1px solid #23272f; border-radius:10px }}
+    .help {{ font-size:14px; color:#cbd5e1; line-height:1.5 }}
+    .stat {{ margin-top:8px; font-size:14px; color:#cbd5e1 }}
+    .ok {{ color:#22c55e }}
+    .warn {{ color:#eab308 }}
+    .err {{ color:#ef4444 }}
+  </style>
 
-                const hands = new Hands({{ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${{f}}` }});
-                hands.setOptions({{ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 }});
+  <!-- MediaPipe Hands + utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div class="row">
+      <div>
+        <video id="cam" autoplay playsinline muted></video>
+      </div>
+      <div class="help">
+        <div><b>How to record:</b></div>
+        <ol>
+          <li>Bring your hand into the camera frame.</li>
+          <li>Hold your <b>{teach_name}</b> sign steady for ~1–2 seconds.</li>
+          <li>We will capture and save {reps_js} samples automatically.</li>
+        </ol>
+        <div id="msg" class="warn">Preparing camera & model…</div>
+      </div>
+    </div>
+    <div id="teachStat" class="stat">Recording samples… 0/{reps_js}</div>
+  </div>
 
-                const v = document.createElement('video'); v.style.display='none'; document.body.appendChild(v);
+<script>
+  const BACKEND = {backend_js};
+  const USER_ID = {uid_js};
+  const NAME    = {name_js};
+  const TARGET  = {reps_js};
 
-                hands.onResults((res) => {{
-                  if (!teaching || !res.multiHandLandmarks || !res.multiHandLandmarks.length) return;
-                  const lm = res.multiHandLandmarks[0];
-                  const pts = lm.map(p => [p.x, p.y, p.z]);
-                  const n = normalize(pts);
-                  frames.push(n.flat().flat());
-                  if (frames.length >= 36) {{
-                    const seq = frames.slice(0,36);
-                    frames = [];
-                    count++;
-                    document.getElementById('teachStat').innerText = `Recording samples… ${{count}}/${{TARGET}}`;
-                    fetch("{BACKEND}/custom_gesture/save?user_id="+encodeURIComponent(USER_ID)+"&name="+encodeURIComponent(NAME)+"&sample_idx="+count, {{
-                      method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{frames: seq}})
-                    }});
-                    if (count >= TARGET) teaching = false;
-                  }}
-                }});
+  let teaching = true;
+  let count = 0;
+  let frames = [];
+  let camera = null;
 
-                (async ()=>{{
-                  const s = await getStream();
-                  if (!s) return;
-                  v.srcObject = s; await v.play();
-                  const cam = new window.Camera(v, {{ onFrame: async()=>{{ await hands.send({{image:v}}); }}, width:320,height:240 }});
-                  cam.start();
-                  setTimeout(()=>{{ teaching=false; cam.stop(); s.getTracks().forEach(t=>t.stop()); }}, 120000);
-                }})();
-              }})();
-            </script>
-            """, height=90)
+  function setMsg(t, cls='help') {{
+    const e = document.getElementById('msg');
+    e.textContent = t; e.className = cls;
+  }}
+  function setStat(done, total) {{
+    document.getElementById('teachStat').textContent = Recording samples… ${{done}}/${{total}};
+  }}
 
-# ===================== COL2: CHAT ======================
+  function normalize(pts) {{
+    const base = pts[0];
+    const shifted = pts.map(p => [p[0]-base[0], p[1]-base[1], p[2]-base[2]]);
+    let m=0; for (let i=1;i<shifted.length;i++) {{ const d = Math.hypot(shifted[i][0], shifted[i][1], shifted[i][2]); m += d; }}
+    m = Math.max(m/(shifted.length-1), 1e-6);
+    return shifted.map(p => [p[0]/m, p[1]/m, p[2]/m]);
+  }}
+
+  async function saveSample(sampleIdx, seqFrames) {{
+    try {{
+      const r = await fetch(${{BACKEND}}/custom_gesture/save?user_id=${{encodeURIComponent(USER_ID)}}&name=${{encodeURIComponent(NAME)}}&sample_idx=${{sampleIdx}}, {{
+        method:"POST", headers:{{"Content-Type":"application/json"}},
+        body: JSON.stringify({{ frames: seqFrames }})
+      }});
+      return r.ok;
+    }} catch(e) {{ return false; }}
+  }}
+
+  const hands = new Hands({{ locateFile: f => https://cdn.jsdelivr.net/npm/@mediapipe/hands/${{f}} }});
+  hands.setOptions({{ maxNumHands:1, modelComplexity:1, minDetectionConfidence:0.7, minTrackingConfidence:0.7 }});
+
+  hands.onResults(async (res) => {{
+    if (!teaching) return;
+    if (!res.multiHandLandmarks || !res.multiHandLandmarks.length) {{
+      setMsg("Show your hand to the camera and hold the sign steady…", "warn");
+      return;
+    }}
+    const lm = res.multiHandLandmarks[0];
+    const pts = lm.map(p => [p.x, p.y, p.z]);
+    const n = normalize(pts);
+    frames.push(n.flat());
+
+    if (frames.length >= 36) {{
+      const seq = frames.slice(0,36);
+      frames = [];
+      count++;
+      setStat(count, TARGET);
+      setMsg(Captured sample #${{count}} ✓, "ok");
+
+      const ok = await saveSample(count, seq);
+      if (!ok) setMsg("Save failed (check backend URL)", "err");
+
+      if (count >= TARGET) {{
+        setMsg("Done! You can close this section.", "ok");
+        teaching = false;
+        try {{ camera.stop(); }} catch(_e) {{}}
+        const v = document.getElementById('cam');
+        try {{ v.srcObject && v.srcObject.getTracks().forEach(t => t.stop()); }} catch(_e) {{}}
+      }}
+    }}
+  }});
+
+  (async () => {{
+    try {{
+      const v = document.getElementById('cam');
+      const stream = await navigator.mediaDevices.getUserMedia({{video: {{ width: 320, height: 240 }}}});
+      v.srcObject = stream; await v.play();
+      camera = new Camera(v, {{
+        onFrame: async () => {{ await hands.send({{ image: v }}); }},
+        width: 320, height: 240
+      }});
+      await camera.start();
+      setMsg("Camera ready. Hold your sign steady to record…", "ok");
+    }} catch (e) {{
+      setMsg("Camera permission denied. Allow camera and try again.", "err");
+    }}
+  }})();
+</script>
+</body>
+</html>
+            """,
+            height=360,
+            scrolling=False,
+        )
+    elif st.session_state.get("teach_on") is False:
+        st.info("Teaching stopped.")
+
+# ===================== COL2: CHAT =====================
 with col2:
     st.subheader("Chat")
     msg = st.text_input("Type your message", placeholder="Say Hello / Yes / No …")
@@ -529,28 +773,6 @@ with col2:
         )
         st.components.v1.html(
             f'<audio autoplay style="display:none"><source src="{url}" type="audio/mpeg"></audio>',
-            height=0,
-        )
-
-    def tts_say(text: str):
-        st.components.v1.html(
-            f"""
-            <script>
-              (function(){{
-                const text = {text!r};
-                const rate = {float(tts_rate)};
-                const pitch = {float(tts_pitch)};
-                const pick = localStorage.getItem("signcall_voice");
-                const u = new SpeechSynthesisUtterance(text);
-                u.lang = "en-US"; u.rate = rate; u.pitch = pitch;
-                const vs = window.speechSynthesis.getVoices();
-                const found = vs.find(v => v.name === pick);
-                if (found) u.voice = found;
-                window.speechSynthesis.cancel();
-                window.speechSynthesis.speak(u);
-              }})();
-            </script>
-            """,
             height=0,
         )
 
@@ -610,7 +832,6 @@ def render_messages(items):
         st.info("No messages yet. Start by sending one.")
         return
     items = sorted(items, key=lambda x: x.get("timestamp", ""))
-
     for row in items:
         content = (row.get("content") or "").strip()
         emoji = row.get("emoji", "")
@@ -620,13 +841,10 @@ def render_messages(items):
         except Exception:
             pretty_ts = ts
 
-        who = "You"  # placeholder until we mark sender
-        klass = "msg-you"
-
         st.markdown(
             f"""
-            <div class="msg-card {klass}">
-              <div><strong>{who}</strong> <span class="pill">en</span></div>
+            <div class="msg-card msg-you">
+              <div><strong>You</strong> <span class="pill">en</span></div>
               <div style="margin-top:6px">{content} <span class="msg-emoji">{emoji}</span></div>
               <div class="msg-meta">{pretty_ts}</div>
             </div>
@@ -646,15 +864,10 @@ def render_messages(items):
                     unsafe_allow_html=True,
                 )
 
-        if tts_enabled and content:
-            tts_say(content)
-
-# ===================== RENDER + AUTO REFRESH =========
 items = fetch_history(st.session_state["user_id"])
 with history_box:
     render_messages(items)
 
-# notify on new
 if items:
     newest_ts = max(x.get("timestamp", "") for x in items)
     if newest_ts and newest_ts != st.session_state["last_seen_ts"]:
@@ -662,12 +875,10 @@ if items:
             play_ui_sound("recv")
         st.session_state["last_seen_ts"] = newest_ts
 
-# manual reload
 if st.session_state.get("_force_reload"):
     st.session_state["_force_reload"] = False
     st.rerun()
 
-# soft auto-refresh
 if autorefresh:
     time.sleep(2)
     st.rerun()
